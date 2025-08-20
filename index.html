@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zombie Shooter</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js",
+    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+body { margin: 0; overflow: hidden; background: #000; font-family: monospace; }
+canvas { display:block; }
+#blocker { position:absolute;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;text-align:center;color:white;font-size:24px;cursor:pointer; }
+#instructions { width:50%; }
+#crosshair { position:absolute; top:50%; left:50%; width:12px; height:12px; border:2px solid white; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; }
+#ui { position:absolute; bottom:20px; left:20px; color:#ff0000; font-size:32px; text-shadow:2px 2px 4px #000; }
+#game-over { position:absolute;width:100%;height:100%;background-color:rgba(100,0,0,0.7);display:none;justify-content:center;align-items:center;text-align:center;flex-direction:column;color:white; }
+#game-over h1 { font-size:72px;color:#ff0000;margin:0; }
+#game-over p { font-size:24px; }
+#restart-button { padding:15px 30px; font-size:20px; background-color:#ff0000;color:white;border:2px solid white;border-radius:10px;cursor:pointer;margin-top:20px; }
+</style>
+</head>
+<body>
+<div id="blocker">
+  <div id="instructions">
+    <h1>ZOMBIE SHOOTER</h1>
+    <p>W,A,S,D to move | Space to jump</p>
+    <p>Mouse to look | Right-click to aim</p>
+    <p>Click to shoot | R to reload</p>
+    <p>Click to play</p>
+  </div>
+</div>
+<div id="crosshair"></div>
+<div id="ui">
+  <div id="ammo">AMMO: 30 / 90</div>
+  <div id="health">HP: 100</div>
+</div>
+<div id="game-over">
+  <h1>YOU DIED</h1>
+  <p id="final-score">You survived 0 seconds</p>
+  <button id="restart-button">RESTART</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+
+// --- SCENE ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x333333);
+scene.fog = new THREE.Fog(0x333333, 10, 200);
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight,0.1,1000);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+// --- LIGHT ---
+const ambientLight = new THREE.AmbientLight(0xffffff,0.5);
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0xffffff,0.8);
+dirLight.position.set(10,50,10);
+dirLight.castShadow = true;
+scene.add(dirLight);
+
+// --- FLOOR / CITY MAP ---
+const mapSize = 200;
+const blockSize = 20;
+const streetMat = new THREE.MeshStandardMaterial({color:0x333333, roughness:0.9});
+const sidewalkMat = new THREE.MeshStandardMaterial({color:0xaaaaaa, roughness:0.8});
+for(let z=-mapSize/2; z<=mapSize/2; z+=blockSize){
+  const streetGeo = new THREE.PlaneGeometry(mapSize,4);
+  const street = new THREE.Mesh(streetGeo, streetMat);
+  street.rotation.x=-Math.PI/2; street.position.z=z; street.receiveShadow=true;
+  scene.add(street);
+  const sidewalkL = new THREE.Mesh(new THREE.PlaneGeometry(mapSize,2),sidewalkMat);
+  sidewalkL.rotation.x=-Math.PI/2; sidewalkL.position.z=z-3; sidewalkL.receiveShadow=true; scene.add(sidewalkL);
+  const sidewalkR = new THREE.Mesh(new THREE.PlaneGeometry(mapSize,2),sidewalkMat);
+  sidewalkR.rotation.x=-Math.PI/2; sidewalkR.position.z=z+3; sidewalkR.receiveShadow=true; scene.add(sidewalkR);
+}
+for(let x=-mapSize/2; x<=mapSize/2; x+=blockSize){
+  const streetGeo = new THREE.PlaneGeometry(4,mapSize);
+  const street = new THREE.Mesh(streetGeo, streetMat);
+  street.rotation.x=-Math.PI/2; street.position.x=x; street.receiveShadow=true; scene.add(street);
+  const sidewalkL = new THREE.Mesh(new THREE.PlaneGeometry(2,mapSize),sidewalkMat);
+  sidewalkL.rotation.x=-Math.PI/2; sidewalkL.position.x=x-3; sidewalkL.receiveShadow=true; scene.add(sidewalkL);
+  const sidewalkR = new THREE.Mesh(new THREE.PlaneGeometry(2,mapSize),sidewalkMat);
+  sidewalkR.rotation.x=-Math.PI/2; sidewalkR.position.x=x+3; sidewalkR.receiveShadow=true; scene.add(sidewalkR);
+}
+
+// --- CONTROLS ---
+const controls = new PointerLockControls(camera, document.body);
+document.getElementById('blocker').addEventListener('click',()=>controls.lock());
+controls.addEventListener('lock',()=>{
+  document.getElementById('blocker').style.display='none';
+});
+controls.addEventListener('unlock',()=>{
+  document.getElementById('blocker').style.display='flex';
+});
+scene.add(controls.getObject());
+
+// --- PLAYER STATE ---
+let moveF=false, moveB=false, moveL=false, moveR=false, jump=false;
+const velocity = new THREE.Vector3();
+const direction = new THREE.Vector3();
+let canJump = true;
+let playerHealth = 100;
+let survivalTime = 0;
+
+// --- MINI-MAP ---
+const miniMapCanvas = document.createElement('canvas');
+miniMapCanvas.width=150; miniMapCanvas.height=150;
+miniMapCanvas.style.position='absolute'; miniMapCanvas.style.top='10px'; miniMapCanvas.style.right='10px'; miniMapCanvas.style.background='rgba(0,0,0,0.5)';
+document.body.appendChild(miniMapCanvas);
+const miniMapCtx = miniMapCanvas.getContext('2d');
+
+// --- GUN ---
+const gun = new THREE.Group();
+const gunBodyMat = new THREE.MeshStandardMaterial({ color:0x222222, roughness:0.4 });
+const gunBarrelMat = new THREE.MeshStandardMaterial({ color:0x444444, metalness:0.8, roughness:0.2 });
+const bodyGeo = new THREE.BoxGeometry(0.2,0.3,1);
+const body = new THREE.Mesh(bodyGeo, gunBodyMat);
+gun.add(body);
+const barrelGeo = new THREE.CylinderGeometry(0.05,0.05,0.8,16);
+const barrel = new THREE.Mesh(barrelGeo, gunBarrelMat);
+barrel.position.set(0,0.2,-0.1); barrel.rotation.x=Math.PI/2;
+gun.add(barrel);
+gun.position.set(0.5,-0.4,-1); gun.rotation.y=Math.PI;
+camera.add(gun);
+
+// --- AMMO ---
+let clip=30, reserve=90, canShoot=true, isReloading=false;
+const ammoUI=document.getElementById('ammo');
+const healthUI=document.getElementById('health');
+
+// --- AUDIO ---
+const listener = new THREE.AudioListener();
+camera.add(listener);
+const gunSound = new THREE.Audio(listener);
+const audioLoader = new THREE.AudioLoader();
+audioLoader.load('sounds/gun_shot.mp3', buffer=>{ gunSound.setBuffer(buffer); gunSound.setVolume(0.5); });
+const zombieSounds = [];
+function playZombieSound(zombie){
+  const sound = new THREE.PositionalAudio(listener);
+  audioLoader.load('sounds/zombie_growl.mp3', buffer=>{ sound.setBuffer(buffer); sound.setLoop(true); sound.setVolume(0.3); sound.play(); });
+  zombie.add(sound);
+  zombieSounds.push(sound);
+}
+
+// --- ZOMBIES ---
+const zombies = [];
+const loader = new GLTFLoader();
+function spawnZombie(){
+  const angle = Math.random()*Math.PI*2;
+  const radius = 30+Math.random()*20;
+  const x = Math.cos(angle)*radius;
+  const z = Math.sin(angle)*radius;
+  loader.load('models/zombie/scene.gltf', gltf=>{
+    const zombie = gltf.scene;
+    zombie.scale.set(1.5,1.5,1.5);
+    zombie.position.set(x,0,z);
+    zombie.traverse(c=>{ if(c.isMesh){ c.castShadow=true; c.receiveShadow=true; } });
+    const mixer = new THREE.AnimationMixer(zombie);
+    gltf.animations.forEach(c=>mixer.clipAction(c).play());
+    zombie.mixer = mixer;
+    zombie.health=5;
+    scene.add(zombie);
+    zombies.push(zombie);
+    playZombieSound(zombie);
+  });
+}
+setInterval(spawnZombie,3000);
+
+// --- CONTROLS EVENTS ---
+document.addEventListener('keydown',e=>{
+  switch(e.code){
+    case 'KeyW': moveF=true; break;
+    case 'KeyS': moveB=true; break;
+    case 'KeyA': moveL=true; break;
+    case 'KeyD': moveR=true; break;
+    case 'Space': if(canJump){ velocity.y=10; canJump=false; } break;
+    case 'KeyR': if(!isReloading && reserve>0) reload(); break;
+  }
+});
+document.addEventListener('keyup',e=>{
+  switch(e.code){
+    case 'KeyW': moveF=false; break;
+    case 'KeyS': moveB=false; break;
+    case 'KeyA': moveL=false; break;
+    case 'KeyD': moveR=false; break;
+  }
+});
+document.addEventListener('mousedown',()=>{
+  if(controls.isLocked && canShoot && !isReloading && clip>0){ shoot(); }
+});
+
+// --- SHOOTING ---
+function shoot(){
+  if(gunSound.isPlaying) gunSound.stop();
+  gunSound.play();
+  canShoot=false;
+  clip--; updateAmmoUI();
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera({x:0,y:0},camera);
+  const hits = raycaster.intersectObjects(zombies,true);
+  if(hits.length>0){
+    let z=hits[0].object.parent; // get root zombie
+    z.health--; if(z.health<=0){ scene.remove(z); zombies.splice(zombies.indexOf(z),1); }
+  }
+  gunRecoil(); screenShake();
+  setTimeout(()=>canShoot=true,150);
+}
+function reload(){
+  isReloading=true;
+  setTimeout(()=>{
+    const needed=30-clip;
+    const avail=Math.min(needed,reserve);
+    clip+=avail; reserve-=avail;
+    updateAmmoUI();
+    isReloading=false;
+  },1500);
+}
+function updateAmmoUI(){ ammoUI.textContent=`AMMO: ${clip} / ${reserve}`; }
+function updateHealthUI(){ healthUI.textContent=`HP: ${Math.floor(playerHealth)}`; }
+function gameOver(){ controls.unlock(); document.getElementById('game-over').style.display='flex'; document.getElementById('final-score').textContent=`You survived ${Math.floor(survivalTime)} seconds`; }
+document.getElementById('restart-button').addEventListener('click',()=>location.reload());
+
+// --- ANIMATION HELPERS ---
+let shakeIntensity=0;
+function screenShake(){ shakeIntensity=0.05; }
+function gunRecoil(){ let recoil=0.1; const interval=setInterval(()=>{ gun.position.z+=recoil; recoil*=-0.5; if(Math.abs(recoil)<0.001){ gun.position.z=-1; clearInterval(interval); } },20); }
+
+// --- ANIMATE ---
+const clock=new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  survivalTime+=delta;
+
+  if(controls.isLocked){
+    velocity.x-=velocity.x*10.0*delta; velocity.z-=velocity.z*10.0*delta;
+    direction.z=Number(moveF)-Number(moveB); direction.x=Number(moveR)-Number(moveL); direction.normalize();
+    if(moveF||moveB) velocity.z-=direction.z*40.0*delta;
+    if(moveL||moveR) velocity.x-=direction.x*40.0*delta;
+    controls.moveRight(-velocity.x*delta); controls.moveForward(-velocity.z*delta);
+    velocity.y-=9.8*delta; controls.getObject().position.y+=velocity.y*delta;
+    if(controls.getObject().position.y<1.6){ velocity.y=0; controls.getObject().position.y=1.6; canJump=true; }
+  }
+
+  if(shakeIntensity>0){
+    camera.position.x+=(Math.random()-0.5)*shakeIntensity;
+    camera.position.y+=(Math.random()-0.5)*shakeIntensity;
+    shakeIntensity-=0.01;
+  }
+
+  // update zombies
+  zombies.forEach(z=>{
+    if(z.mixer) z.mixer.update(delta);
+    const playerPos = controls.getObject().position;
+    const dist = z.position.distanceTo(playerPos);
+    if(dist>1.5){ const dir = new THREE.Vector3().subVectors(playerPos,z.position).normalize(); z.position.add(dir.multiplyScalar(2*delta)); z.lookAt(playerPos); }
+    else{ playerHealth-=5*delta; updateHealthUI(); if(playerHealth<=0) gameOver(); }
+  });
+
+  // --- MINI MAP ---
+  miniMapCtx.clearRect(0,0,150,150);
+  miniMapCtx.fillStyle='gray';
+  miniMapCtx.fillRect(0,0,150,150);
+  miniMapCtx.fillStyle='yellow';
+  const px=75+controls.getObject().position.x/2;
+  const pz=75+controls.getObject().position.z/2;
+  miniMapCtx.beginPath(); miniMapCtx.arc(px,pz,5,0,Math.PI*2); miniMapCtx.fill();
+
+  renderer.render(scene,camera);
+}
+
+animate();
+</script>
+</body>
+</html>
