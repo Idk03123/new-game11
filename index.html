@@ -50,7 +50,6 @@ canvas { display:block; }
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // --- SCENE ---
 const scene = new THREE.Scene();
@@ -99,12 +98,8 @@ for(let x=-mapSize/2; x<=mapSize/2; x+=blockSize){
 // --- CONTROLS ---
 const controls = new PointerLockControls(camera, document.body);
 document.getElementById('blocker').addEventListener('click',()=>controls.lock());
-controls.addEventListener('lock',()=>{
-  document.getElementById('blocker').style.display='none';
-});
-controls.addEventListener('unlock',()=>{
-  document.getElementById('blocker').style.display='flex';
-});
+controls.addEventListener('lock',()=>{ document.getElementById('blocker').style.display='none'; });
+controls.addEventListener('unlock',()=>{ document.getElementById('blocker').style.display='flex'; });
 scene.add(controls.getObject());
 
 // --- PLAYER STATE ---
@@ -158,28 +153,72 @@ function playZombieSound(zombie){
 // --- ZOMBIES ---
 const zombies = [];
 const loader = new GLTFLoader();
-function spawnZombie(){
-  const angle = Math.random()*Math.PI*2;
-  const radius = 30+Math.random()*20;
-  const x = Math.cos(angle)*radius;
-  const z = Math.sin(angle)*radius;
-  loader.load('models/zombie/scene.gltf', gltf=>{
-    const zombie = gltf.scene;
-    zombie.scale.set(1.5,1.5,1.5);
-    zombie.position.set(x,0,z);
-    zombie.traverse(c=>{ if(c.isMesh){ c.castShadow=true; c.receiveShadow=true; } });
-    const mixer = new THREE.AnimationMixer(zombie);
-    gltf.animations.forEach(c=>mixer.clipAction(c).play());
-    zombie.mixer = mixer;
-    zombie.health=5;
-    scene.add(zombie);
-    zombies.push(zombie);
-    playZombieSound(zombie);
-  });
+function spawnZombie() {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 30 + Math.random() * 20;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+
+    loader.load('models/zombie/scene.gltf', gltf => {
+        const zombie = gltf.scene;
+        zombie.scale.set(1.5, 1.5, 1.5);
+        zombie.position.set(x,0,z);
+        zombie.traverse(c => { if(c.isMesh){ c.castShadow=true; c.receiveShadow=true; } });
+        const mixer = new THREE.AnimationMixer(zombie);
+        gltf.animations.forEach(a => mixer.clipAction(a).play());
+        zombie.mixer = mixer;
+        zombie.health = 100;
+        scene.add(zombie);
+        zombies.push(zombie);
+        playZombieSound(zombie);
+    });
 }
 setInterval(spawnZombie,3000);
 
-// --- CONTROLS EVENTS ---
+// --- BULLETS ---
+const bullets = [];
+function shoot(){
+    if(!canShoot || clip<=0) return;
+    clip--; updateAmmoUI(); canShoot=false;
+
+    // visible bullet
+    const bulletGeo = new THREE.SphereGeometry(0.05,8,8);
+    const bulletMat = new THREE.MeshBasicMaterial({color:0xffff00});
+    const bullet = new THREE.Mesh(bulletGeo,bulletMat);
+    bullet.position.copy(camera.position);
+    bullet.velocity = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).multiplyScalar(100);
+    bullets.push(bullet);
+    scene.add(bullet);
+
+    // raycast hit for instant damage
+    const raycaster = new THREE.Raycaster(camera.position, new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion));
+    const hits = raycaster.intersectObjects(zombies,true);
+    if(hits.length>0){
+        let z=hits[0].object.parent;
+        z.health -= 20;
+        if(z.health<=0){ scene.remove(z); zombies.splice(zombies.indexOf(z),1); }
+    }
+
+    gunRecoil(); screenShake();
+    gunSound.play();
+    setTimeout(()=>canShoot=true,150);
+}
+function updateBullets(delta){
+    for(let i=bullets.length-1;i>=0;i--){
+        const b=bullets[i];
+        b.position.addScaledVector(b.velocity,delta);
+        zombies.forEach(z=>{
+            if(b.position.distanceTo(z.position)<1){
+                z.health-=20;
+                if(z.health<=0){ scene.remove(z); zombies.splice(zombies.indexOf(z),1); }
+                scene.remove(b); bullets.splice(i,1);
+            }
+        });
+        if(b.position.length()>500){ scene.remove(b); bullets.splice(i,1); }
+    }
+}
+
+// --- CONTROLS ---
 document.addEventListener('keydown',e=>{
   switch(e.code){
     case 'KeyW': moveF=true; break;
@@ -198,36 +237,9 @@ document.addEventListener('keyup',e=>{
     case 'KeyD': moveR=false; break;
   }
 });
-document.addEventListener('mousedown',()=>{
-  if(controls.isLocked && canShoot && !isReloading && clip>0){ shoot(); }
-});
+document.addEventListener('mousedown',()=>{ if(controls.isLocked) shoot(); });
 
-// --- SHOOTING ---
-function shoot(){
-  if(gunSound.isPlaying) gunSound.stop();
-  gunSound.play();
-  canShoot=false;
-  clip--; updateAmmoUI();
-  const raycaster = new THREE.Raycaster();
-  raycaster.setFromCamera({x:0,y:0},camera);
-  const hits = raycaster.intersectObjects(zombies,true);
-  if(hits.length>0){
-    let z=hits[0].object.parent; // get root zombie
-    z.health--; if(z.health<=0){ scene.remove(z); zombies.splice(zombies.indexOf(z),1); }
-  }
-  gunRecoil(); screenShake();
-  setTimeout(()=>canShoot=true,150);
-}
-function reload(){
-  isReloading=true;
-  setTimeout(()=>{
-    const needed=30-clip;
-    const avail=Math.min(needed,reserve);
-    clip+=avail; reserve-=avail;
-    updateAmmoUI();
-    isReloading=false;
-  },1500);
-}
+function reload(){ isReloading=true; setTimeout(()=>{ const needed=30-clip; const avail=Math.min(needed,reserve); clip+=avail; reserve-=avail; updateAmmoUI(); isReloading=false; },1500); }
 function updateAmmoUI(){ ammoUI.textContent=`AMMO: ${clip} / ${reserve}`; }
 function updateHealthUI(){ healthUI.textContent=`HP: ${Math.floor(playerHealth)}`; }
 function gameOver(){ controls.unlock(); document.getElementById('game-over').style.display='flex'; document.getElementById('final-score').textContent=`You survived ${Math.floor(survivalTime)} seconds`; }
@@ -238,13 +250,13 @@ let shakeIntensity=0;
 function screenShake(){ shakeIntensity=0.05; }
 function gunRecoil(){ let recoil=0.1; const interval=setInterval(()=>{ gun.position.z+=recoil; recoil*=-0.5; if(Math.abs(recoil)<0.001){ gun.position.z=-1; clearInterval(interval); } },20); }
 
-// --- ANIMATE ---
 const clock=new THREE.Clock();
 function animate(){
   requestAnimationFrame(animate);
-  const delta = clock.getDelta();
+  const delta=clock.getDelta();
   survivalTime+=delta;
 
+  // --- PLAYER MOVEMENT ---
   if(controls.isLocked){
     velocity.x-=velocity.x*10.0*delta; velocity.z-=velocity.z*10.0*delta;
     direction.z=Number(moveF)-Number(moveB); direction.x=Number(moveR)-Number(moveL); direction.normalize();
@@ -261,12 +273,15 @@ function animate(){
     shakeIntensity-=0.01;
   }
 
-  // update zombies
+  // --- BULLETS ---
+  updateBullets(delta);
+
+  // --- ZOMBIES ---
   zombies.forEach(z=>{
     if(z.mixer) z.mixer.update(delta);
-    const playerPos = controls.getObject().position;
+    const playerPos=controls.getObject().position;
     const dist = z.position.distanceTo(playerPos);
-    if(dist>1.5){ const dir = new THREE.Vector3().subVectors(playerPos,z.position).normalize(); z.position.add(dir.multiplyScalar(2*delta)); z.lookAt(playerPos); }
+    if(dist>1.5){ const dir = new THREE.Vector3().subVectors(playerPos,z.position).normalize(); z.position.addScaledVector(dir,2*delta); z.lookAt(playerPos); }
     else{ playerHealth-=5*delta; updateHealthUI(); if(playerHealth<=0) gameOver(); }
   });
 
