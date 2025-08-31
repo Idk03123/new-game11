@@ -1,51 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Zombie Shooter</title>
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js",
-    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/"
-  }
-}
-</script>
-<style>
-body { margin: 0; overflow: hidden; background: #000; font-family: monospace; }
-canvas { display:block; }
-#blocker { position:absolute;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;text-align:center;color:white;font-size:24px;cursor:pointer; }
-#instructions { width:50%; }
-#crosshair { position:absolute; top:50%; left:50%; width:12px; height:12px; border:2px solid white; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; }
-#ui { position:absolute; bottom:20px; left:20px; color:#ff0000; font-size:32px; text-shadow:2px 2px 4px #000; }
-#game-over { position:absolute;width:100%;height:100%;background-color:rgba(100,0,0,0.7);display:none;justify-content:center;align-items:center;text-align:center;flex-direction:column;color:white; }
-#game-over h1 { font-size:72px;color:#ff0000;margin:0; }
-#game-over p { font-size:24px; }
-#restart-button { padding:15px 30px; font-size:20px; background-color:#ff0000;color:white;border:2px solid white;border-radius:10px;cursor:pointer;margin-top:20px; }
-</style>
-</head>
-<body>
-<div id="blocker">
-  <div id="instructions">
-    <h1>ZOMBIE SHOOTER</h1>
-    <p>W,A,S,D to move | Space to jump</p>
-    <p>Mouse to look | Right-click to aim</p>
-    <p>Click to shoot | R to reload</p>
-    <p>Click to play</p>
-  </div>
-</div>
-<div id="crosshair"></div>
-<div id="ui">
-  <div id="ammo">AMMO: 30 / 90</div>
-  <div id="health">HP: 100</div>
-</div>
-<div id="game-over">
-  <h1>YOU DIED</h1>
-  <p id="final-score">You survived 0 seconds</p>
-  <button id="restart-button">RESTART</button>
-</div>
-
 <script type="module">
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
@@ -82,32 +34,64 @@ let moveF=false, moveB=false, moveL=false, moveR=false;
 const velocity = new THREE.Vector3();
 const direction = new THREE.Vector3();
 let canJump = true;
-let playerHealth = 100;
-let survivalTime = 0;
 
-// --- GUN ---
-const gun = new THREE.Group();
-const gunBodyMat = new THREE.MeshStandardMaterial({ color:0x222222, roughness:0.4 });
-const bodyGeo = new THREE.BoxGeometry(0.2,0.3,1);
-const body = new THREE.Mesh(bodyGeo, gunBodyMat);
-gun.add(body);
-gun.position.set(0.5,-0.4,-1);
-gun.rotation.y=Math.PI;
-camera.add(gun);
+// --- MAP (floor + walls + props) ---
+const floorGeo = new THREE.PlaneGeometry(200,200);
+const floorMat = new THREE.MeshStandardMaterial({ color:0x444444 });
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI/2;
+floor.receiveShadow = true;
+scene.add(floor);
 
-// --- AIMING STATE ---
-let isAiming = false;
-const normalFOV = 75;
-const aimFOV = 50;
-const normalGunPos = new THREE.Vector3(0.5,-0.4,-1);
-const aimGunPos = new THREE.Vector3(0.0,-0.3,-0.6);
+// walls
+const wallMat = new THREE.MeshStandardMaterial({ color:0x222222 });
+function makeWall(x,z,w,h){
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(w,h,2), wallMat);
+  wall.position.set(x,h/2,z);
+  wall.castShadow = true;
+  wall.receiveShadow = true;
+  scene.add(wall);
+}
+makeWall(0,-100,200,20); // north
+makeWall(0,100,200,20);  // south
+makeWall(-100,0,2,20);   // west
+makeWall(100,0,2,20);    // east
 
-// --- AMMO ---
-let clip=30, reserve=90, canShoot=true, isReloading=false;
-const ammoUI=document.getElementById('ammo');
-const healthUI=document.getElementById('health');
+// obstacles
+for(let i=0;i<10;i++){
+  const box = new THREE.Mesh(new THREE.BoxGeometry(5,5,5), new THREE.MeshStandardMaterial({color:0x666666}));
+  box.position.set((Math.random()-0.5)*150,2.5,(Math.random()-0.5)*150);
+  box.castShadow = true;
+  box.receiveShadow = true;
+  scene.add(box);
+}
 
-// --- ZOMBIES / BULLETS omitted for brevity (unchanged, same as your paste) ---
+// --- ZOMBIE LOADER ---
+const loader = new GLTFLoader();
+const zombies = [];
+const mixers = [];
+
+// example zombie GLTF (replace with a real model URL!)
+loader.load('https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb',(gltf)=>{
+  const model = gltf.scene;
+  model.scale.set(0.5,0.5,0.5);
+
+  for(let i=0;i<5;i++){
+    const zombie = model.clone();
+    zombie.position.set((Math.random()-0.5)*100,0,(Math.random()-0.5)*100);
+    scene.add(zombie);
+    zombies.push(zombie);
+
+    // animation
+    const mixer = new THREE.AnimationMixer(zombie);
+    const clip = gltf.animations.find(a=>a.name.includes("Walk")) || gltf.animations[0];
+    if(clip){
+      const action = mixer.clipAction(clip);
+      action.play();
+    }
+    mixers.push(mixer);
+  }
+});
 
 // --- INPUTS ---
 document.addEventListener('keydown',e=>{
@@ -117,7 +101,6 @@ document.addEventListener('keydown',e=>{
     case 'KeyA': moveL=true; break;
     case 'KeyD': moveR=true; break;
     case 'Space': if(canJump){ velocity.y=10; canJump=false; } break;
-    case 'KeyR': if(!isReloading && reserve>0) reload(); break;
   }
 });
 document.addEventListener('keyup',e=>{
@@ -128,35 +111,30 @@ document.addEventListener('keyup',e=>{
     case 'KeyD': moveR=false; break;
   }
 });
-document.addEventListener('mousedown',e=>{
-  if(!controls.isLocked) return;
-  if(e.button===0) shoot(); // left click
-  if(e.button===2) { isAiming = true; } // right click down
-});
-document.addEventListener('mouseup',e=>{
-  if(e.button===2) { isAiming = false; } // right click up
-});
 
 // --- ANIMATE ---
 const clock=new THREE.Clock();
 function animate(){
   requestAnimationFrame(animate);
   const delta=clock.getDelta();
-  survivalTime+=delta;
 
-  // Smooth FOV change
-  camera.fov += ( (isAiming?aimFOV:normalFOV) - camera.fov ) * 0.1;
-  camera.updateProjectionMatrix();
+  // movement
+  direction.z = Number(moveF) - Number(moveB);
+  direction.x = Number(moveR) - Number(moveL);
+  direction.normalize();
+  if(moveF||moveB) velocity.z -= direction.z * 50.0 * delta;
+  if(moveL||moveR) velocity.x -= direction.x * 50.0 * delta;
 
-  // Smooth gun movement
-  gun.position.lerp(isAiming?aimGunPos:normalGunPos,0.1);
+  controls.moveRight(-velocity.x * delta);
+  controls.moveForward(-velocity.z * delta);
 
-  // movement / zombies / bullets updates here (same as before)...
+  velocity.x -= velocity.x * 10.0 * delta;
+  velocity.z -= velocity.z * 10.0 * delta;
+
+  // zombie animations
+  mixers.forEach(m=>m.update(delta));
 
   renderer.render(scene,camera);
 }
 animate();
-
 </script>
-</body>
-</html>
